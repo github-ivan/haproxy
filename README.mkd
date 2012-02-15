@@ -18,6 +18,11 @@ In third_party/libafdt dir you need to build libafdt.
 (bootstrap.sh, configure, make)  
 Then you have to build HAProxy with USE_AFDT=1  
 
+## Using takeover
+
+Add takeover-socket to global section. e.g.:
+takeover-socket /tmp/haproxy_takeover.cmd
+
 Have fun!
 
 ivan
