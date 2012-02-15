@@ -81,6 +81,9 @@ struct global {
 	char *log_tag;                  /* name for syslog */
 	struct list logsrvs;
 	char *log_send_hostname;   /* set hostname in syslog header */
+#ifdef USE_AFDT
+	char *takeover_socket;   /* set unix socket name used for listener socket takeover */
+#endif
 	struct {
 		int maxpollevents; /* max number of poll events at once */
 		int maxaccept;     /* max number of consecutive accept() */
@@ -126,6 +129,12 @@ extern char hostname[MAX_HOSTNAME_LEN];
 extern char localpeer[MAX_HOSTNAME_LEN];
 extern struct list global_listener_queue; /* list of the temporarily limited listeners */
 extern struct task *global_listener_queue_task;
+
+#ifdef USE_AFDT
+extern int takeover_socket_client_fd;   /* takeover socket fd for client socket */
+extern int takeover_socket_server_fd;   /* takeover socket fd for server socket */
+extern int *oldpids;
+#endif
 
 #endif /* _TYPES_GLOBAL_H */
 

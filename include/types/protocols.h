@@ -34,6 +34,10 @@
 #include <types/counters.h>
 #include <types/task.h>
 
+#ifdef USE_ADFT
+#include <protocols/proto_takeover.h>
+#endif
+
 /* max length of a protcol name, including trailing zero */
 #define PROTO_NAME_LEN 16
 

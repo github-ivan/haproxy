@@ -138,7 +138,11 @@ int jobs = 0;   /* number of active jobs (conns, listeners, active tasks, ...) *
  * our ports. With 200 retries, that's about 2 seconds.
  */
 #define MAX_START_RETRIES	200
+#ifdef USE_AFDT
+int *oldpids = NULL;
+#else
 static int *oldpids = NULL;
+#endif
 static int oldpids_sig; /* use USR1 or TERM */
 
 /* this is used to drain data, and as a temporary buffer for sprintf()... */
@@ -153,6 +157,10 @@ int nb_oldpids = 0;
 const int zero = 0;
 const int one = 1;
 const struct linger nolinger = { .l_onoff = 1, .l_linger = 0 };
+#ifdef USE_AFDT
+int takeover_socket_client_fd = -1;
+int takeover_socket_server_fd = -1;
+#endif
 
 char hostname[MAX_HOSTNAME_LEN];
 char localpeer[MAX_HOSTNAME_LEN];
@@ -268,6 +276,16 @@ void sig_soft_stop(struct sig_handler *sh)
 	signal_unregister_handler(sh);
 	pool_gc2();
 }
+
+#ifdef USE_AFDT
+/*
+ * upon SIGUSR2, let's check for AFDT message.
+ */
+void sig_read_afdt(struct sig_handler *sh)
+{
+	read_afdt();
+}
+#endif
 
 /*
  * upon SIGTTOU, we pause everything
@@ -789,6 +807,7 @@ void deinit(void)
 	int i;
 
 	deinit_signals();
+
 	while (p) {
 		free(p->id);
 		free(p->check_req);
@@ -1146,6 +1165,16 @@ int main(int argc, char **argv)
 	 */
 	retry = MAX_START_RETRIES;
 	err = ERR_NONE;
+#ifdef USE_AFDT
+	/* try to connect older haproxy process if takover-socket is set */
+	if (global.takeover_socket != NULL && nb_oldpids > 0) {
+		struct afdt_error_t afdt_error;
+		int afdt_fd = afdt_connect(global.takeover_socket, &afdt_error);
+		/* TODO: we may need to check unix socket and warn if exists
+                   but can't connect */
+		if (afdt_fd >= 0) takeover_socket_client_fd = afdt_fd;
+	}
+#endif
 	while (retry >= 0) {
 		struct timeval w;
 		err = start_proxies(retry == 0 || nb_oldpids == 0);
@@ -1155,14 +1184,24 @@ int main(int argc, char **argv)
 		if (nb_oldpids == 0 || retry == 0)
 			break;
 
+#ifdef USE_AFDT
+		// we have to do break because we use listener takeover
+		// we will exit if there were errors in start_proxies()
+		if (takeover_socket_client_fd >= 0) {
+			break;
+		} else
+#endif
+
 		/* FIXME-20060514: Solaris and OpenBSD do not support shutdown() on
 		 * listening sockets. So on those platforms, it would be wiser to
 		 * simply send SIGUSR1, which will not be undoable.
 		 */
-		if (tell_old_pids(SIGTTOU) == 0) {
-			/* no need to wait if we can't contact old pids */
-			retry = 0;
-			continue;
+		{
+			if (tell_old_pids(SIGTTOU) == 0) {
+				/* no need to wait if we can't contact old pids */
+				retry = 0;
+				continue;
+			}
 		}
 		/* give some time to old processes to stop listening */
 		w.tv_sec = 0;
@@ -1170,6 +1209,27 @@ int main(int argc, char **argv)
 		select(0, NULL, NULL, NULL, &w);
 		retry--;
 	}
+#ifdef USE_AFDT
+	/* listener socket transfer is done, we close client socket fd
+	   and cleanup takeover unix socket */
+	if (takeover_socket_client_fd >= 0) {
+		close(takeover_socket_client_fd);
+		takeover_socket_client_fd = -1;
+	}
+	/* start to listen unix socket is takeover-socket is set */
+	if (global.takeover_socket) {
+		struct afdt_error_t afdt_error;
+
+		unlink(global.takeover_socket);
+		int ret = afdt_listen(global.takeover_socket, &afdt_error);
+		if (ret < 0) {
+			Warning("afdt_listen error: %s\n", afdt_error.message);
+			// maybe we need to exit here
+		} else {
+			takeover_socket_server_fd = ret;
+		}
+	}
+#endif
 
 	/* Note: start_proxies() sends an alert when it fails. */
 	if ((err & ~ERR_WARN) != ERR_NONE) {
@@ -1201,9 +1261,19 @@ int main(int argc, char **argv)
 		Alert("[%s.main()] %s.\n", argv[0], errmsg);
 	}
 
+#ifdef USE_AFDT
+	/* prepare afdt read signal */
+	if (takeover_socket_server_fd >= 0) {
+		signal_register_fct(SIGTTOU, NULL, SIGTTOU);
+		signal_register_fct(SIGTTIN, NULL, SIGTTIN);
+		signal_register_fct(SIGUSR2, sig_read_afdt, SIGUSR2);
+	} else
+#endif
 	/* prepare pause/play signals */
-	signal_register_fct(SIGTTOU, sig_pause, SIGTTOU);
-	signal_register_fct(SIGTTIN, sig_listen, SIGTTIN);
+	{
+		signal_register_fct(SIGTTOU, sig_pause, SIGTTOU);
+		signal_register_fct(SIGTTIN, sig_listen, SIGTTIN);
+	}
 
 	/* MODE_QUIET can inhibit alerts and warnings below this line */
 

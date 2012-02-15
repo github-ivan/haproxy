@@ -56,6 +56,11 @@
 #include <import/ip_tproxy.h>
 #endif
 
+#ifdef USE_AFDT
+#include <proto/signal.h>
+#include <poll.h>
+#endif
+
 static int tcp_bind_listeners(struct protocol *proto, char *errmsg, int errlen);
 static int tcp_bind_listener(struct listener *listener, char *errmsg, int errlen);
 
@@ -470,9 +475,10 @@ int tcp_connect_server(struct stream_interface *si)
  */
 int tcp_bind_listener(struct listener *listener, char *errmsg, int errlen)
 {
-	__label__ tcp_return, tcp_close_return;
+	__label__ tcp_return, tcp_close_return, call_socket;
 	int fd, err;
 	const char *msg = NULL;
+	int do_bind; /* we use it to disable bind() call if we use AFDT */
 
 	/* ensure we never return garbage */
 	if (errmsg && errlen)
@@ -483,7 +489,60 @@ int tcp_bind_listener(struct listener *listener, char *errmsg, int errlen)
 
 	err = ERR_NONE;
 
-	if ((fd = socket(listener->addr.ss_family, SOCK_STREAM, IPPROTO_TCP)) == -1) {
+	fd = -1;
+	do_bind = 1;
+#ifdef USE_AFDT
+	if (takeover_socket_client_fd >= 0) {
+		struct afdt_error_t afdt_error;
+		uint32_t content_len = sizeof(struct sockaddr_storage) + C_AFDT_CMD_SIZE;
+		uint8_t content[AFDT_MSGLEN];
+		uint8_t reply[AFDT_MSGLEN];
+		uint32_t reply_len = C_AFDT_CMD_SIZE;
+		int listen_fd = -1;
+		int ret;
+
+		// TODO: make timeout configurable
+		struct timeval timeout = { .tv_sec = 1, .tv_usec = 0 };
+		
+		*content = C_AFDT_REQ_LISTENER_FD;
+		memcpy(content + C_AFDT_CMD_SIZE, &(listener->addr), sizeof(struct sockaddr_storage));
+		ret = afdt_send_plain_msg(takeover_socket_client_fd, content,
+					  content_len, &afdt_error);
+		if (ret < 0) {
+			Alert("Can't send AFDT message to old server.\n");
+			send_log(NULL, LOG_ALERT, "Can't send AFDT message to old server.\n");
+		} else {
+			kill(oldpids[0], SIGUSR2);
+
+			// original code is in libafdt sync.c
+			struct pollfd pfd = { .fd = takeover_socket_client_fd, .events = POLLIN };
+			int timeout_ms = timeout.tv_sec * 1000 + timeout.tv_usec / 1000;
+			ret = poll(&pfd, 1, timeout_ms);
+			if (ret < 0) {
+				Alert("Can't receive AFDT message from old server.\n");
+				send_log(NULL, LOG_ALERT, "Can't receive AFDT message from old server.\n");
+				goto call_socket;
+			} else if (ret == 0) {
+				Alert("Can't receive AFDT message from old server. Timeout.\n");
+				send_log(NULL, LOG_ALERT, "Can't receive AFDT message from old server. Timeout.\n");
+				goto call_socket;
+			}
+
+			ret = afdt_recv_fd_msg(takeover_socket_client_fd, reply, &reply_len,
+					       &listen_fd, &afdt_error);
+			if ((ret >= 0) && (reply_len == 1) && (*reply == C_AFDT_RSP_LISTENER_FD)) {
+				fd = listen_fd;
+				do_bind = 0;
+			} else {
+				Alert("AFDT client recv fd error: %s. Ret: %d\n", afdt_error.message, ret);
+				send_log(NULL, LOG_ALERT, "AFDT client recv fd error: %s. Ret: %d\n",
+					 afdt_error.message, ret);
+			}
+		}
+	}
+#endif
+ call_socket:
+	if ((fd < 0) && ((fd = socket(listener->addr.ss_family, SOCK_STREAM, IPPROTO_TCP)) == -1)) {
 		err |= ERR_RETRYABLE | ERR_ALERT;
 		msg = "cannot create listening socket";
 		goto tcp_return;
@@ -553,11 +612,18 @@ int tcp_bind_listener(struct listener *listener, char *errmsg, int errlen)
 		}
 	}
 #endif
+#ifdef USE_AFDT
+	/* don't call bind if listener socket was transfered successfully from old process */
+	if (do_bind) {
+#endif
 	if (bind(fd, (struct sockaddr *)&listener->addr, listener->proto->sock_addrlen) == -1) {
 		err |= ERR_RETRYABLE | ERR_ALERT;
 		msg = "cannot bind socket";
 		goto tcp_close_return;
 	}
+#ifdef USE_AFDT
+	}
+#endif
 
 	if (listen(fd, listener->backlog ? listener->backlog : listener->maxconn) == -1) {
 		err |= ERR_RETRYABLE | ERR_ALERT;

@@ -1001,6 +1001,21 @@ int cfg_parse_global(const char *file, int linenum, char **args, int kwm)
 		free(global.log_tag);
 		global.log_tag = strdup(args[1]);
 	}
+#ifdef USE_AFDT
+	else if (!strcmp(args[0], "takeover-socket")) {  /* takover socket path */
+		if (global.takeover_socket != NULL) {
+			Alert("parsing [%s:%d] : '%s' already specified. Continuing.\n", file, linenum, args[0]);
+			err_code |= ERR_ALERT;
+			goto out;
+		}
+		if (*(args[1]) == 0) {
+			Alert("parsing [%s:%d] : '%s' expects a takeover socket path.\n", file, linenum, args[0]);
+			err_code |= ERR_ALERT | ERR_FATAL;
+			goto out;
+		}
+		global.takeover_socket = strdup(args[1]);
+	}
+#endif
 	else if (!strcmp(args[0], "spread-checks")) {  /* random time between checks (0-50) */
 		if (global.spread_checks != 0) {
 			Alert("parsing [%s:%d]: spread-checks already specified. Continuing.\n", file, linenum);

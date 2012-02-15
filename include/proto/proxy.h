@@ -28,10 +28,12 @@
 #include <types/global.h>
 #include <types/proxy.h>
 #include <proto/freq_ctr.h>
+#include <proto/proto_takeover.h>
 
 int start_proxies(int verbose);
 struct task *manage_proxy(struct task *t);
 void soft_stop(void);
+void read_afdt(void);
 int pause_proxy(struct proxy *p);
 int resume_proxy(struct proxy *p);
 void stop_proxy(struct proxy *p);

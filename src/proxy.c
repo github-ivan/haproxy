@@ -39,11 +39,14 @@
 #include <proto/signal.h>
 #include <proto/task.h>
 
-
 int listeners;	/* # of proxy listeners, set by cfgparse */
 struct proxy *proxy  = NULL;	/* list of all existing proxies */
 struct eb_root used_proxy_id = EB_ROOT;	/* list of proxy IDs in use */
 unsigned int error_snapshot_id = 0;     /* global ID assigned to each error then incremented */
+
+#ifdef USE_AFDT
+static int takeover_socket_accepted_fd = -1; /* stores client socket fd of incoming afdt */
+#endif
 
 /*
  * This function returns a string containing a name describing capabilities to
@@ -612,6 +615,78 @@ void soft_stop(void)
 	signal_handler(0);
 }
 
+#ifdef USE_AFDT
+/* Read an AFDT message from newly started HAProxy instance.
+ * We have have to search for requested listener and
+ * send back related listener socket fd. 
+ */
+void read_afdt(void)
+{
+	struct afdt_error_t err;
+	uint8_t request[AFDT_MSGLEN];
+	uint32_t request_len = sizeof(struct sockaddr_storage) + C_AFDT_CMD_SIZE;
+	struct proxy *curproxy;
+	struct listener *listener;
+	struct sockaddr sa;
+	socklen_t socklen;
+	int client_fd;
+	uint8_t response[AFDT_MSGLEN];
+	int ret;
+
+	/* read_afdt called, so disable unix socket cleanup
+	   because new process will do that */
+	// cleanup_takeover_socket = 0;
+
+	// return if don't use takeover
+	if (takeover_socket_server_fd < 0) return;
+
+	// accept client if we didn't do that or set client_fd
+	if (takeover_socket_accepted_fd < 0) {
+		client_fd = accept(takeover_socket_server_fd, &sa, &socklen);
+		if (client_fd < 0) return;
+		takeover_socket_accepted_fd = client_fd;
+	} else {
+		client_fd = takeover_socket_accepted_fd;
+	}
+	
+
+	ret = afdt_recv_plain_msg(client_fd, request, &request_len, &err);
+	if (ret < 0) {
+		*response = C_AFDT_RSP_ERR;
+		send_log(NULL, LOG_ALERT, "AFDT server recv error: %s.\n", err.message);
+		afdt_send_plain_msg(client_fd, response, C_AFDT_CMD_SIZE, &err);
+		return;
+	}
+	if ((request_len < 1) || (request[0] != C_AFDT_REQ_LISTENER_FD)) {
+		*response = C_AFDT_RSP_ERR;
+		send_log(NULL, LOG_ALERT, "AFDT server recv error. Invalid request message.\n");
+		afdt_send_plain_msg(client_fd, response, C_AFDT_CMD_SIZE, &err);
+		return;
+	}
+
+	for (curproxy = proxy; curproxy != NULL; curproxy = curproxy->next) {
+		for (listener = curproxy->listen; listener != NULL; listener = listener->next) {
+			// we don't check listener state == LI_LISTEN. it may cause problem.
+			if (! memcmp(request + 1, &(listener->addr), sizeof(struct sockaddr_storage))) {
+				*response = C_AFDT_RSP_LISTENER_FD;
+				afdt_send_fd_msg(client_fd,
+					response,
+					C_AFDT_CMD_SIZE,
+					listener->fd,
+					&err);
+				return;
+			}
+		}
+	}
+
+	*response = C_AFDT_RSP_NO_SUCH_LISTENER;
+	send_log(NULL, LOG_WARNING, "AFDT server recv error. Listener is not available.\n");
+	afdt_send_plain_msg(client_fd, response,
+			C_AFDT_CMD_SIZE, &err);
+
+	return;
+}
+#endif // USE_AFDT
 
 /* Temporarily disables listening on all of the proxy's listeners. Upon
  * success, the proxy enters the PR_PAUSED state. If disabling at least one

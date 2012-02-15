@@ -25,6 +25,7 @@
 #   USE_CRYPT_H          : set it if your system requires including crypt.h
 #   USE_VSYSCALL         : enable vsyscall on Linux x86, bypassing libc
 #   USE_GETADDRINFO      : use getaddrinfo() to resolve IPv6 host names.
+#   USE_AFDT             : use AFDT for listener socket transfer
 #
 # Options can be forced by specifying "USE_xxx=1" or can be disabled by using
 # "USE_xxx=" (empty string).
@@ -335,6 +336,12 @@ ifneq ($(USE_CTTPROXY),)
 OPTIONS_CFLAGS += -DCONFIG_HAP_CTTPROXY
 OPTIONS_OBJS   += src/cttproxy.o
 BUILD_OPTIONS  += $(call ignore_implicit,USE_CTTPROXY)
+endif
+
+ifneq ($(USE_AFDT),)
+OPTIONS_CFLAGS += -DUSE_AFDT -Ithird_party
+OPTIONS_OBJS   += third_party/libafdt/.libs/libafdt.a
+BUILD_OPTIONS  += $(call ignore_implicit,USE_AFDT)
 endif
 
 ifneq ($(USE_TPROXY),)
