@@ -1,0 +1,24 @@
+# HAProxy with listener socket takeover
+
+HAProxy is a reverse proxy. (http://haproxy.1wt.eu)
+
+This repo adds a new feature based on libafdt which makes
+it possible to reload HAProxy without unbinding listener socket.
+(libafdt: http://sourceforge.net/projects/libafdt/)
+
+It's a beta version!
+
+## Motivation
+
+Just for fun.
+
+## Build binary
+
+In third_party/libafdt dir you need to build libafdt.
+(bootstrap.sh, configure, make)
+Then you have to build HAProxy with USE_AFDT=1
+
+Have fun!
+
+ivan
+
